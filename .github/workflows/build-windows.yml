@@ -79,6 +79,7 @@ jobs:
         run: |
           . packaging\test_app.ps1
           Test-Separation dist\UVR\UVR.exe 'exe'
+          Get-FileList dist\UVR | Set-Content (Join-Path $env:RUNNER_TEMP 'dist_files.txt')
 
       - name: Upload app
         id: upload
@@ -87,6 +88,8 @@ jobs:
           name: UVR-optimize-windows-x64
           path: dist/UVR
           retention-days: 30
+          # numpy keeps its DLLs in numpy\.libs; skipping "hidden" dot folders broke the app
+          include-hidden-files: true
 
       # Test exactly what users download: the uploaded zip, extracted with Windows' built-in tar,
       # first into a plain folder, then into one whose path has spaces and Korean characters

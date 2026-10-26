@@ -69,13 +69,27 @@ function Test-Gui([string]$exe, [string]$label) {
     Write-Notice "$label GUI: main window opened"
 }
 
+# Every file under $dir (including hidden ones), relative to it
+function Get-FileList([string]$dir) {
+    $root = (Resolve-Path $dir).Path.TrimEnd('\') + '\'
+    Get-ChildItem $dir -Recurse -File -Force | ForEach-Object { $_.FullName.Substring($root.Length) } | Sort-Object
+}
+
 # Extracts the downloaded zip with Windows' built-in tar into $dest and tests it there
 function Test-Extracted([string]$zip, [string]$dest, [string]$label) {
     New-Item -ItemType Directory -Force $dest | Out-Null
     $start = Get-Date
     tar.exe -xf $zip -C $dest
     if ($LASTEXITCODE -ne 0) { Write-Annotation "$label extract" @("tar exit $LASTEXITCODE"); exit 1 }
-    Write-Notice "${label}: extracted $((Get-ChildItem $dest -Recurse -File).Count) files to '$dest' in $([int]((Get-Date) - $start).TotalSeconds) s"
+    $extracted = Get-FileList $dest
+    Write-Notice "${label}: extracted $($extracted.Count) files to '$dest' in $([int]((Get-Date) - $start).TotalSeconds) s"
+    $built = Get-Content (Join-Path $env:RUNNER_TEMP 'dist_files.txt')
+    $present = [System.Collections.Generic.HashSet[string]]::new([string[]]$extracted, [System.StringComparer]::OrdinalIgnoreCase)
+    $missing = $built | Where-Object { -not $present.Contains($_) }
+    if ($missing) {
+        Write-Annotation "$label is missing $(@($missing).Count) of $($built.Count) built files" (@($missing) | Select-Object -First 30)
+        exit 1
+    }
     $exe = Join-Path $dest 'UVR.exe'
     Test-Separation $exe $label
     Test-Gui $exe $label
