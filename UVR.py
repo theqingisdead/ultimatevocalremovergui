@@ -5,6 +5,18 @@ if __name__ == "__main__" and sys.argv[1:2] == ['--headless']:
     from tools.headless_separate import run_cli
     sys.exit(run_cli(sys.argv[2:]))
 
+# The windowed exe has no console, so also save any crash to UVR_crash.log next to it
+if getattr(sys, 'frozen', False):
+    def save_crash_log(exc_type, exc, tb, default_hook=sys.excepthook):
+        try:
+            import os, traceback
+            with open(os.path.join(os.path.dirname(sys.executable), 'UVR_crash.log'), 'w', encoding='utf-8') as f:
+                traceback.print_exception(exc_type, exc, tb, file=f)
+        except Exception:
+            pass
+        default_hook(exc_type, exc, tb)
+    sys.excepthook = save_crash_log
+
 # GUI modules
 import time
 #start_time = time.time()

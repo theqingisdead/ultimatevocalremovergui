@@ -66,6 +66,11 @@ jobs:
           Invoke-Logged 'pyinstaller' { pyinstaller packaging/UVR.spec --noconfirm --distpath dist --workpath packaging/work }
           Write-Host "Built $((Get-ChildItem dist\UVR -Recurse -File).Count) files"
 
+      - name: Check every DLL ships with the app or Windows
+        run: |
+          . packaging\ci.ps1
+          Invoke-Logged 'DLL check' { python packaging/check_dlls.py dist/UVR }
+
       - name: Smoke test UVR.exe (separation without the GUI)
         run: |
           . packaging\ci.ps1

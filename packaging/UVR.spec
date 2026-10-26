@@ -3,6 +3,7 @@
 # Produces dist/UVR/UVR.exe with all files next to it (UVR.py expects its data
 # folders in sys._MEIPASS, which is the exe's folder with contents_directory='.').
 import os
+import sys
 from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs, collect_submodules, copy_metadata
 
 ROOT = os.path.dirname(SPECPATH)
@@ -36,6 +37,16 @@ bin_dir = os.path.join(SPECPATH, 'bin')
 binaries = [(os.path.join(bin_dir, name), '.') for name in os.listdir(bin_dir)] if os.path.isdir(bin_dir) else []
 binaries += collect_dynamic_libs('samplerate')
 
+# Ship the Visual C++ runtime with the app. PyTorch, numba, onnxruntime and scikit-learn
+# need msvcp140*.dll / vcomp140.dll, which the build machine has but many PCs lack or
+# have in an older version, so the app crashed on startup there.
+if sys.platform == 'win32':
+    system32 = os.path.join(os.environ['SystemRoot'], 'System32')
+    for name in ('msvcp140.dll', 'msvcp140_1.dll', 'msvcp140_2.dll', 'msvcp140_atomic_wait.dll',
+                 'msvcp140_codecvt_ids.dll', 'vcruntime140.dll', 'vcruntime140_1.dll', 'concrt140.dll', 'vcomp140.dll'):
+        if os.path.isfile(os.path.join(system32, name)):
+            binaries.append((os.path.join(system32, name), '.'))
+
 
 def local_modules(package):
     """Every module of a package in this repo. collect_submodules can't import them, and some
@@ -63,6 +74,8 @@ a = Analysis(
     excludes=['torchaudio', 'matplotlib', 'IPython', 'tensorboard', 'transformers'],
     noarchive=False,
 )
+# The TensorRT provider needs TensorRT, which isn't bundled; UVR only uses the CUDA provider
+a.binaries = [b for b in a.binaries if os.path.basename(b[0]).lower() != 'onnxruntime_providers_tensorrt.dll']
 pyz = PYZ(a.pure)
 
 exe = EXE(
