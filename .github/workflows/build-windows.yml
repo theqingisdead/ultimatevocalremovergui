@@ -10,6 +10,10 @@ concurrency:
   group: build-windows-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+  actions: read
+
 jobs:
   build:
     runs-on: windows-latest
@@ -73,44 +77,30 @@ jobs:
 
       - name: Smoke test UVR.exe (separation without the GUI)
         run: |
-          . packaging\ci.ps1
-          function Test-Exe([string]$name, [string[]]$extra) {
-            $exeArgs = @('--headless', '--input', 'smoke\clip.wav', '--out', "smoke\exe\$name") + $extra
-            $p = Start-Process dist\UVR\UVR.exe -ArgumentList $exeArgs -WorkingDirectory $pwd -Wait -PassThru
-            Write-Host "${name}: UVR.exe exit code $($p.ExitCode)"
-            if ($p.ExitCode -ne 0) {
-              $lines = if (Test-Path headless_error.log) { Get-Content headless_error.log -Tail 40 } else { @('no headless_error.log') }
-              Write-Annotation "UVR.exe $name exit $($p.ExitCode)" $lines
-              exit 1
-            }
-            Invoke-Logged "compare $name" { python tools/compare_outputs.py "smoke\source\$name" "smoke\exe\$name" --min-db 100 }
-          }
-          Test-Exe 'mdx' @('--arch', 'mdx', '--model', 'smoke\UVR-MDX-NET-Inst_HQ_3.onnx', '--set', 'is_denoise_model=True', 'denoiser_model=models/VR_Models/UVR-DeNoise-Lite.pth')
-          Test-Exe 'demucs' @('--arch', 'demucs', '--model', 'smoke\demucs\htdemucs.yaml')
+          . packaging\test_app.ps1
+          Test-Separation dist\UVR\UVR.exe 'exe'
 
       - name: Upload app
+        id: upload
         uses: actions/upload-artifact@v4
         with:
           name: UVR-optimize-windows-x64
           path: dist/UVR
           retention-days: 30
 
-      - name: Check the GUI starts
+      # Test exactly what users download: the uploaded zip, extracted with Windows' own unzip
+      # into a folder whose path has spaces and non-ASCII (Korean) characters
+      - name: Test the downloaded zip from a fresh folder
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          $p = Start-Process dist\UVR\UVR.exe -PassThru
-          $ok = $false
-          for ($i = 0; $i -lt 60; $i++) {
-            Start-Sleep -Seconds 3
-            $p.Refresh()
-            if ($p.HasExited) { break }
-            if ($p.MainWindowTitle -like '*Ultimate Vocal Remover*') { $ok = $true; break }
-          }
-          $status = "exited: $($p.HasExited)  window title: '$($p.MainWindowTitle)'"
-          $windows = Get-Process | Where-Object { $_.MainWindowTitle } | ForEach-Object { "$($_.ProcessName): $($_.MainWindowTitle)" }
-          Write-Host $status
-          if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force }
-          if (-not $ok) {
-            . packaging\ci.ps1
-            Write-Annotation 'GUI check' (@($status) + $windows)
-            exit 1
-          }
+          . packaging\test_app.ps1
+          $zip = Join-Path $env:RUNNER_TEMP 'UVR-optimize-windows-x64.zip'
+          curl.exe -sSL -H "Authorization: Bearer $env:GH_TOKEN" -o $zip "https://api.github.com/repos/${{ github.repository }}/actions/artifacts/${{ steps.upload.outputs.artifact-id }}/zip"
+          if ($LASTEXITCODE -ne 0) { Write-Annotation 'download zip' @("curl exit $LASTEXITCODE"); exit 1 }
+          Write-Host "Downloaded $([math]::Round((Get-Item $zip).Length / 1GB, 2)) GB"
+          $dest = Join-Path $env:RUNNER_TEMP '다운로드 폴더\UVR optimize'
+          Expand-Archive $zip -DestinationPath $dest
+          Remove-Item -Recurse -Force dist
+          Test-Separation (Join-Path $dest 'UVR.exe') 'zip'
+          Test-Gui (Join-Path $dest 'UVR.exe')

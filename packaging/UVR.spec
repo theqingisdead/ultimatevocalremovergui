@@ -74,8 +74,11 @@ a = Analysis(
     excludes=['torchaudio', 'matplotlib', 'IPython', 'tensorboard', 'transformers'],
     noarchive=False,
 )
-# The TensorRT provider needs TensorRT, which isn't bundled; UVR only uses the CUDA provider
-a.binaries = [b for b in a.binaries if os.path.basename(b[0]).lower() != 'onnxruntime_providers_tensorrt.dll']
+# Optional backends whose libraries aren't bundled: onnxruntime's TensorRT provider (UVR uses
+# the CUDA provider) and numba's TBB threading layer (numba falls back to OpenMP without it)
+a.binaries = [b for b in a.binaries
+              if os.path.basename(b[0]).lower() != 'onnxruntime_providers_tensorrt.dll'
+              and not os.path.basename(b[0]).lower().startswith('tbbpool.')]
 pyz = PYZ(a.pure)
 
 exe = EXE(
