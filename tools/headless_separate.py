@@ -234,9 +234,10 @@ def make_model_data(constants, arch, model_path, settings, config_path, model_da
     return md
 
 
-def main():
+def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument('--uvr-dir', default='.', help='UVR checkout to run (this fork or upstream)')
+    parser.add_argument('--uvr-dir', default=getattr(sys, '_MEIPASS', '.'),
+                        help='UVR checkout to run (this fork or upstream); defaults to the app folder when run as UVR.exe')
     parser.add_argument('--arch', required=True, choices=['roformer', 'mdxc', 'mdx', 'vr', 'demucs'])
     parser.add_argument('--model', required=True, help='Model file (.ckpt/.onnx/.pth, or .yaml for Demucs v4)')
     parser.add_argument('--config', help='Model config .yaml (Roformer / MDX23C)')
@@ -250,7 +251,7 @@ def main():
     parser.add_argument('--emulate-half-on-cpu', action='store_true',
                         help='Testing only: run the fork\'s half precision path with CPU autocast to estimate its output difference without a GPU (slow)')
     parser.add_argument('--quiet', action='store_true')
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     model_path = os.path.abspath(args.model)
     config_path = os.path.abspath(args.config) if args.config else None
@@ -324,6 +325,25 @@ def main():
     with open(os.path.join(out_dir, 'timings.json'), 'w') as f:
         json.dump({'arch': args.arch, 'model': os.path.basename(model_path), 'device': args.device,
                    'settings': settings, 'runs': results}, f, indent=2)
+
+
+def run_cli(argv):
+    """Entry point for `UVR.py --headless` / `UVR.exe --headless`. Returns an exit code.
+
+    Errors are also written to headless_error.log, since the windowed exe has no console.
+    """
+    log_path = os.path.abspath('headless_error.log')
+    try:
+        main(argv)
+    except SystemExit as e:
+        return e.code if isinstance(e.code, int) else 1
+    except BaseException:
+        import traceback
+        with open(log_path, 'w') as f:
+            traceback.print_exc(file=f)
+        traceback.print_exc()
+        return 1
+    return 0
 
 
 if __name__ == '__main__':

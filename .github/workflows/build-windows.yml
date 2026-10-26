@@ -1,0 +1,98 @@
+name: Build Windows app
+
+on:
+  push:
+    branches: [optimize]
+    paths-ignore: ['**.md']
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 150
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: packaging/requirements-windows.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade "pip<25"
+          python -m pip install -r packaging/requirements-windows.txt
+
+      - name: Download FFmpeg and Rubber Band
+        run: |
+          New-Item -ItemType Directory -Force packaging\bin | Out-Null
+          Invoke-WebRequest https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip -OutFile ffmpeg.zip
+          Expand-Archive ffmpeg.zip -DestinationPath ffmpeg_tmp
+          Copy-Item (Get-ChildItem ffmpeg_tmp -Recurse -Filter ffmpeg.exe | Select-Object -First 1).FullName packaging\bin\
+          Invoke-WebRequest https://breakfastquay.com/files/releases/rubberband-3.1.2-gpl-executable-windows.zip -OutFile rubberband.zip
+          Expand-Archive rubberband.zip -DestinationPath rubberband_tmp
+          foreach ($name in 'rubberband.exe', 'sndfile.dll') {
+            Copy-Item (Get-ChildItem rubberband_tmp -Recurse -Filter $name | Select-Object -First 1).FullName packaging\bin\
+          }
+          Get-ChildItem packaging\bin
+
+      - name: Prepare smoke test input
+        run: |
+          New-Item -ItemType Directory -Force smoke\demucs | Out-Null
+          $repo = 'https://github.com/TRvlvr/model_repo/releases/download/all_public_uvr_models'
+          Invoke-WebRequest "$repo/UVR-MDX-NET-Inst_HQ_3.onnx" -OutFile smoke\UVR-MDX-NET-Inst_HQ_3.onnx
+          Invoke-WebRequest "$repo/htdemucs.yaml" -OutFile smoke\demucs\htdemucs.yaml
+          Invoke-WebRequest https://dl.fbaipublicfiles.com/demucs/hybrid_transformer/955717e8-8726e21a.th -OutFile smoke\demucs\955717e8-8726e21a.th
+          python -c "import numpy as np, soundfile as sf; sr=44100; t=np.arange(8*sr)/sr; rng=np.random.default_rng(0); x=np.stack([0.3*np.sin(2*np.pi*220*t)+0.05*rng.standard_normal(t.size), 0.3*np.sin(2*np.pi*330*t)+0.05*rng.standard_normal(t.size)],1); sf.write('smoke/clip.wav', x.astype('float32'), sr, subtype='FLOAT')"
+
+      - name: Smoke test from source
+        run: |
+          python UVR.py --headless --input smoke\clip.wav --out smoke\source\mdx --arch mdx --model smoke\UVR-MDX-NET-Inst_HQ_3.onnx --set is_denoise_model=True denoiser_model=models/VR_Models/UVR-DeNoise-Lite.pth
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          python UVR.py --headless --input smoke\clip.wav --out smoke\source\demucs --arch demucs --model smoke\demucs\htdemucs.yaml
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      - name: Build with PyInstaller
+        run: pyinstaller packaging/UVR.spec --noconfirm --distpath dist --workpath packaging/work
+
+      - name: Smoke test UVR.exe (separation without the GUI)
+        run: |
+          function Test-Exe([string]$name, [string[]]$extra) {
+            $exeArgs = @('--headless', '--input', 'smoke\clip.wav', '--out', "smoke\exe\$name") + $extra
+            $p = Start-Process dist\UVR\UVR.exe -ArgumentList $exeArgs -WorkingDirectory $pwd -Wait -PassThru
+            Write-Host "${name}: UVR.exe exit code $($p.ExitCode)"
+            if ($p.ExitCode -ne 0) {
+              if (Test-Path headless_error.log) { Get-Content headless_error.log }
+              exit 1
+            }
+            python tools/compare_outputs.py "smoke\source\$name" "smoke\exe\$name" --min-db 100
+            if ($LASTEXITCODE -ne 0) { exit 1 }
+          }
+          Test-Exe 'mdx' @('--arch', 'mdx', '--model', 'smoke\UVR-MDX-NET-Inst_HQ_3.onnx', '--set', 'is_denoise_model=True', 'denoiser_model=models/VR_Models/UVR-DeNoise-Lite.pth')
+          Test-Exe 'demucs' @('--arch', 'demucs', '--model', 'smoke\demucs\htdemucs.yaml')
+
+      - name: Upload app
+        uses: actions/upload-artifact@v4
+        with:
+          name: UVR-optimize-windows-x64
+          path: dist/UVR
+          retention-days: 30
+
+      - name: Check the GUI starts
+        run: |
+          $p = Start-Process dist\UVR\UVR.exe -PassThru
+          $ok = $false
+          for ($i = 0; $i -lt 60; $i++) {
+            Start-Sleep -Seconds 3
+            $p.Refresh()
+            if ($p.HasExited) { break }
+            if ($p.MainWindowTitle -like '*Ultimate Vocal Remover*') { $ok = $true; break }
+          }
+          Write-Host "exited: $($p.HasExited)  window title: '$($p.MainWindowTitle)'"
+          Get-Process | Where-Object { $_.MainWindowTitle } | Format-Table Id, ProcessName, MainWindowTitle
+          if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force }
+          if (-not $ok) { exit 1 }

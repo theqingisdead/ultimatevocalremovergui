@@ -11,8 +11,12 @@ from separate import (get_gpu_info, clear_gpu_cache,
 import warnings
 warnings.filterwarnings("ignore")
 
+torch_directml = None
 if not is_macos:
-    import torch_directml # type:ignore
+    try:
+        import torch_directml # type:ignore
+    except ImportError:
+        pass
 
 DIRECTML_DEVICE, directml_available = get_gpu_info()
 is_choose_arch = cuda_available and directml_available

@@ -83,6 +83,21 @@ config default) this changes nothing.
 - Removed a Demucs v4 model that was built and immediately thrown away on
   every load.
 
+## Windows build
+
+`.github/workflows/build-windows.yml` builds `UVR.exe` with PyInstaller
+(`packaging/UVR.spec`) on every push to `optimize`, using Python 3.11 and the
+CUDA 12.4 build of PyTorch, with FFmpeg and Rubber Band next to the exe. Before
+uploading, it runs MDX-Net (with the denoise model) and Demucs through the
+built exe and checks the output matches the same separation run from source.
+Download the result from the run's **Artifacts** section on the Actions tab
+and extract it to a writable folder (not Program Files, since UVR saves its
+settings and models next to the exe).
+
+`UVR.exe --headless ...` (or `python UVR.py --headless ...`) separates from
+the command line without opening the GUI; it takes the same arguments as
+`tools/headless_separate.py`.
+
 ## Requirements
 
 Half precision works with any PyTorch 2.x. Roformer attention is fastest with

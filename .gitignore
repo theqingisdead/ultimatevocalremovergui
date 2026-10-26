@@ -1,2 +1,6 @@
 __pycache__/
 benchmark_out/
+dist/
+packaging/work/
+packaging/bin/
+headless_error.log

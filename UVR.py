@@ -1,3 +1,10 @@
+# Command-line separation without opening the GUI: UVR.exe --headless <args>
+# (see tools/headless_separate.py; the Windows build workflow uses it as a smoke test)
+import sys
+if __name__ == "__main__" and sys.argv[1:2] == ['--headless']:
+    from tools.headless_separate import run_cli
+    sys.exit(run_cli(sys.argv[2:]))
+
 # GUI modules
 import time
 #start_time = time.time()
@@ -63,8 +70,12 @@ from os.path import expanduser
 # import faulthandler
 # faulthandler.enable()
 
+torch_directml = None
 if not is_macos:
-    import torch_directml # type:ignore
+    try:
+        import torch_directml # type:ignore
+    except ImportError:
+        pass
 
 is_choose_arch = cuda_available and directml_available
 is_directml_only = not cuda_available and directml_available
