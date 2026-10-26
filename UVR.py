@@ -43,6 +43,7 @@ from gui_data.tkinterdnd2 import TkinterDnD, DND_FILES
 from lib_v5.vr_network.model_param_init import ModelParameters
 from lib_v5 import spec_utils
 from lib_v5 import apollo_inference
+from lib_v5 import model_cache
 from kthread import KThread
 from pathlib  import Path
 from separate import (
@@ -383,6 +384,7 @@ class ModelData():
         self.is_denoise_model = True if root.denoise_option_var.get() == DENOISE_M and os.path.isfile(DENOISER_MODEL_PATH) else False
         self.is_gpu_conversion = 0 if root.is_gpu_conversion_var.get() else -1
         self.is_normalization = root.is_normalization_var.get()#
+        self.is_half_precision = root.is_half_precision_var.get()
         self.is_use_directml = True if is_directml_only else root.is_use_directml_var.get()
         self.is_primary_stem_only = root.is_primary_stem_only_var.get()
         self.is_secondary_stem_only = root.is_secondary_stem_only_var.get()
@@ -3708,6 +3710,10 @@ class MainWindow(TkinterDnD.Tk if is_dnd_compatible else tk.Tk):
         is_normalization_Option.grid()
         self.help_hints(is_normalization_Option, text=IS_NORMALIZATION_HELP)
         
+        is_half_precision_Option = ttk.Checkbutton(settings_menu_format_Frame, text=HALF_PRECISION_TEXT, width=GEN_SETTINGS_WIDTH, variable=self.is_half_precision_var) 
+        is_half_precision_Option.grid()
+        self.help_hints(is_half_precision_Option, text=IS_HALF_PRECISION_HELP)
+        
         change_model_default_Button = ttk.Button(settings_menu_format_Frame, text=CHANGE_MODEL_DEFAULTS_TEXT, command=lambda:self.pop_up_change_model_defaults(settings_menu), width=SETTINGS_BUT_WIDTH-2)#
         change_model_default_Button.grid(pady=MENU_PADDING_4)
 
@@ -6016,7 +6022,8 @@ class MainWindow(TkinterDnD.Tk if is_dnd_compatible else tk.Tk):
     def update_loop(self):
         """Update the model dropdown menus"""
 
-        if self.clear_cache_torch:
+        if self.clear_cache_torch and not self.thread_check(self.active_processing_thread):
+            model_cache.release_gpu()
             clear_gpu_cache()
             self.clear_cache_torch = False
 
@@ -6030,6 +6037,7 @@ class MainWindow(TkinterDnD.Tk if is_dnd_compatible else tk.Tk):
                 self.conversion_Button_Text_var.set(START_PROCESSING)
                 self.conversion_Button.configure(state=tk.NORMAL)
                 self.progress_bar_main_var.set(0)
+                model_cache.release_gpu()
                 clear_gpu_cache()
                 self.is_process_stopped = False
             
@@ -7459,6 +7467,7 @@ class MainWindow(TkinterDnD.Tk if is_dnd_compatible else tk.Tk):
         self.is_accept_any_input_var = tk.BooleanVar(value=data['is_accept_any_input'])
         self.is_task_complete_var = tk.BooleanVar(value=data['is_task_complete'])
         self.is_normalization_var = tk.BooleanVar(value=data['is_normalization'])#
+        self.is_half_precision_var = tk.BooleanVar(value=data['is_half_precision'])
         self.is_use_directml_var = tk.BooleanVar(value=True if is_directml_only else data['is_use_directml'])#
         self.is_wav_ensemble_var = tk.BooleanVar(value=data['is_wav_ensemble'])#
         self.is_create_model_folder_var = tk.BooleanVar(value=data['is_create_model_folder'])
@@ -7627,6 +7636,7 @@ class MainWindow(TkinterDnD.Tk if is_dnd_compatible else tk.Tk):
             
         self.is_gpu_conversion_var.set(loaded_setting['is_gpu_conversion'])
         self.is_normalization_var.set(loaded_setting['is_normalization'])#
+        self.is_half_precision_var.set(loaded_setting['is_half_precision'])
         self.is_use_directml_var.set(True if is_directml_only else loaded_setting['is_use_directml'])#
         self.is_wav_ensemble_var.set(loaded_setting['is_wav_ensemble'])#
         self.help_hints_var.set(loaded_setting['help_hints_var'])
@@ -7748,6 +7758,7 @@ class MainWindow(TkinterDnD.Tk if is_dnd_compatible else tk.Tk):
             'apollo_model': self.apollo_model_var.get(),
             'is_task_complete': self.is_task_complete_var.get(),
             'is_normalization': self.is_normalization_var.get(),#
+            'is_half_precision': self.is_half_precision_var.get(),
             'is_use_directml': self.is_use_directml_var.get(),#
             'is_wav_ensemble': self.is_wav_ensemble_var.get(),#
             'is_create_model_folder': self.is_create_model_folder_var.get(),

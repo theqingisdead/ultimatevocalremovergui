@@ -53,13 +53,10 @@ class Attend(nn.Module):
         if not torch.cuda.is_available() or not flash:
             return
 
-        device_properties = torch.cuda.get_device_properties(torch.device('cuda'))
-
-        if device_properties.major == 8 and device_properties.minor == 0:
-            print_once('A100 GPU detected, using flash attention if input tensor is on cuda')
-            self.cuda_config = FlashAttentionConfig(True, False, False)
-        else:
-            self.cuda_config = FlashAttentionConfig(False, True, True)
+        # Allow every kernel and let PyTorch pick the fastest one the GPU and dtype support.
+        # FlashAttention only runs in half precision on newer GPUs; full precision still uses
+        # the memory-efficient kernel as before.
+        self.cuda_config = FlashAttentionConfig(True, True, True)
 
     def flash_attn(self, q, k, v):
         _, heads, q_len, _, k_len, is_cuda, device = *q.shape, k.shape[-2], q.is_cuda, q.device

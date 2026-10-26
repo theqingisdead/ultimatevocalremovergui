@@ -16,7 +16,6 @@ import torch as th
 from torch import nn
 from torch.nn import functional as F
 import tqdm
-import tkinter as tk
 
 from .demucs import Demucs
 from .hdemucs import HDemucs
@@ -132,7 +131,8 @@ def apply_model(model,
                 device=None, 
                 progress=False, 
                 num_workers=0, 
-                pool=None): 
+                pool=None,
+                inference=None): 
     """
     Apply model to a given mixture.
 
@@ -175,6 +175,7 @@ def apply_model(model,
         'pool': pool,
         'set_progress_bar': set_progress_bar,
         'static_shifts': static_shifts,
+        'inference': inference,
     }
     
     if isinstance(model, BagOfModels):
@@ -268,7 +269,7 @@ def apply_model(model,
         mix = tensor_chunk(mix)
         padded_mix = mix.padded(valid_length).to(device)
         with th.no_grad():
-            out = model(padded_mix)
+            out = inference(model, padded_mix) if inference else model(padded_mix)
         return center_trim(out, length)
     
 def demucs_segments(demucs_segment, demucs_model):

@@ -669,6 +669,7 @@ DEFAULT_DATA = {
         'is_save_to_input_path': False,
         'is_task_complete': False,
         'is_normalization': False,
+        'is_half_precision': False,
         'is_use_directml': False,
         'is_wav_ensemble': False,
         'is_create_model_folder': False,
@@ -799,6 +800,7 @@ SETTING_CHECK = ('vr_model',
                'user_code',
                'is_gpu_conversion',
                'is_normalization',
+               'is_half_precision',
                'is_use_directml',
                'is_wav_ensemble',
                'help_hints_var',
@@ -1067,6 +1069,9 @@ else:
 IS_TIME_CORRECTION_HELP = ('When checked, the output will retain the original BPM of the input.')
 SAVE_STEM_ONLY_HELP = 'Allows the user to save only the selected stem.'
 IS_NORMALIZATION_HELP = 'Normalizes output to prevent clipping.'
+IS_HALF_PRECISION_HELP = ('• Runs Roformer, MDX23C, Demucs and VR models in 16-bit precision on NVIDIA and Apple GPUs.\n'
+                          '       - Usually much faster and uses less VRAM. Output differs slightly from full precision.\n'
+                          '       - Falls back to full precision automatically if a model produces invalid values.')
 IS_DIRECTML_HELP = ('• Utilizes DirectML instead of CUDA when checked. This option is useful for non-Nvidia GPU\'s.\n'
                     '       - This option is experimental and may not work correctly with some networks.')
 IS_CUDA_SELECT_HELP = "If you have more than one GPU, you can pick which one to use for processing."
@@ -1519,6 +1524,7 @@ NAME_SETTINGS_TEXT = 'Name Settings'
 NO_DEFINED_PARAMETERS_FOUND_TEXT = 'No Defined Parameters Found'
 NO_TEXT = 'No'
 NORMALIZE_OUTPUT_TEXT = 'Normalize Output'
+HALF_PRECISION_TEXT = 'Half Precision (Faster GPU)'
 USE_DIRECTML_TEXT = 'Use DirectML'
 NOT_ENOUGH_MODELS_TEXT = 'Not Enough Models'
 NOTIFICATION_CHIMES_TEXT = 'Notification Chimes'

@@ -1,13 +1,13 @@
 from __future__ import annotations
 from typing import TYPE_CHECKING
 from demucs.apply import apply_model, demucs_segments
-from demucs.hdemucs import HDemucs
 from demucs.model_v2 import auto_load_demucs_model_v2
 from demucs.pretrained import get_model as _gm
 from demucs.utils import apply_model_v1
 from demucs.utils import apply_model_v2
 from lib_v5.tfc_tdf_v3 import TFC_TDF_net, STFT
 from lib_v5 import spec_utils
+from lib_v5 import model_cache
 from lib_v5.vr_network import nets
 from lib_v5.vr_network import nets_new
 from lib_v5.vr_network.model_param_init import ModelParameters
@@ -41,8 +41,12 @@ import gc
 if TYPE_CHECKING:
     from UVR import ModelData
 
+torch_directml = None
 if not is_macos:
-    import torch_directml # type:ignore
+    try:
+        import torch_directml # type:ignore
+    except ImportError:
+        pass
 
 mps_available = torch.backends.mps.is_available() if is_macos else False
 cuda_available = torch.cuda.is_available()
@@ -51,7 +55,7 @@ default_sr = 44100
 def get_gpu_info():
     directml_device, directml_available = DIRECTML_DEVICE, False
     
-    if not is_macos:
+    if torch_directml is not None:
         directml_available = torch_directml.is_available()
 
         if directml_available:
@@ -205,6 +209,13 @@ class SeperateAttributes:
                     self.device = CUDA_DEVICE if not device_prefix else f'{device_prefix}:{self.device_set}'
                     self.run_type = ['CUDAExecutionProvider']
 
+        # Half precision only pays off on CUDA and Apple GPUs; CPU and DirectML stay in full precision.
+        self.autocast_device = None
+        if model_data.is_half_precision and not self.is_using_directml:
+            device_type = torch.device(self.device).type
+            if device_type in ('cuda', 'mps'):
+                self.autocast_device = device_type
+
         if model_data.process_method == MDX_ARCH_TYPE:
             self.is_mdx_ckpt = model_data.is_mdx_ckpt
             self.primary_model_name, self.primary_sources = self.cached_source_callback(MDX_ARCH_TYPE, model_name=self.model_basename)
@@ -214,6 +225,7 @@ class SeperateAttributes:
             self.mdx_batch_size = model_data.mdx_batch_size
             self.compensate = model_data.compensate
             self.mdx_segment_size = model_data.mdx_segment_size
+            self.is_torch_mdx = True
             
             if self.is_mdx_c:
                 if not self.is_4_stem_ensemble:
@@ -289,6 +301,23 @@ class SeperateAttributes:
                                    'split_bin': self.mp.param['band'][1]['crop_stop'], 
                                    'aggr_correction': self.mp.param.get('aggr_correction')}
             
+    def run_inference(self, model_call, *args):
+        """Calls a model in half precision when enabled. If half precision fails or
+        produces inf/NaN, redoes the call in full precision and stays there for this run."""
+        if self.autocast_device:
+            try:
+                with torch.autocast(self.autocast_device, dtype=torch.float16):
+                    output = model_call(*args)
+                if torch.isfinite(output).all():
+                    return output.float()
+                print(f'{self.model_basename}: half precision produced invalid values, switching to full precision.')
+            except RuntimeError as e:
+                if 'out of memory' in str(e):
+                    raise
+                print(f'{self.model_basename}: half precision failed ({e}), switching to full precision.')
+            self.autocast_device = None
+        return model_call(*args)
+
     def check_label_secondary_stem_runs(self):
         if (self.process_data['is_ensemble_master'] and not self.is_4_stem_ensemble and not self.is_mdx_c) or (self.process_data['is_ensemble_master'] and self.is_target_instrument):
             if self.ensemble_primary_stem != self.primary_stem:
@@ -440,7 +469,7 @@ class SeperateAttributes:
             
         def deverb_vocals(stem_path:str, stem_source):
             self.write_to_console(INFERENCE_STEP_DEVERBING, base_text='')
-            stem_source_deverbed, stem_source_2 = vr_denoiser(stem_source, self.device, is_deverber=True, model_path=self.DEVERBER_MODEL)
+            stem_source_deverbed, stem_source_2 = vr_denoiser(stem_source, self.device, is_deverber=True, model_path=self.DEVERBER_MODEL, inference=self.run_inference)
             save_audio_file(stem_path.replace(".wav", "_deverbed.wav"), stem_source_deverbed)
             save_audio_file(stem_path.replace(".wav", "_reverb_only.wav"), stem_source_2)
             
@@ -499,18 +528,29 @@ class SeperateMDX(SeperateAttributes):
         else:
             self.start_inference_console_write()
 
+            model_file_key = model_cache.file_key(self.model_path)
+            self.is_torch_mdx = True
+
             if self.is_mdx_ckpt:
-                model_params = torch.load(self.model_path, map_location=lambda storage, loc: storage)['hyper_parameters']
+                def load_ckpt():
+                    model_params = torch.load(self.model_path, map_location=lambda storage, loc: storage)['hyper_parameters']
+                    separator = MdxnetSet.ConvTDFNet(**model_params)
+                    model = separator.load_from_checkpoint(self.model_path).eval()
+                    model.uvr_hyper_parameters = model_params
+                    return model
+
+                self.model_run = model_cache.get(('mdx_ckpt', *model_file_key), load_ckpt, self.device)
+                model_params = self.model_run.uvr_hyper_parameters
                 self.dim_c, self.hop = model_params['dim_c'], model_params['hop_length']
-                separator = MdxnetSet.ConvTDFNet(**model_params)
-                self.model_run = separator.load_from_checkpoint(self.model_path).to(self.device).eval()
             else:
                 if self.mdx_segment_size == self.dim_t and not self.is_other_gpu:
-                    ort_ = ort.InferenceSession(self.model_path, providers=self.run_type)
+                    load_session = lambda:ort.InferenceSession(self.model_path, providers=self.run_type)
+                    ort_ = model_cache.get(('mdx_onnx', *model_file_key, *self.run_type), load_session)
                     self.model_run = lambda spek:ort_.run(None, {'input': spek.cpu().numpy()})[0]
+                    self.is_torch_mdx = False
                 else:
-                    self.model_run = ConvertModel(load(self.model_path))
-                    self.model_run.to(self.device).eval()
+                    load_converted = lambda:ConvertModel(load(self.model_path)).eval()
+                    self.model_run = model_cache.get(('mdx_onnx_torch', *model_file_key), load_converted, self.device)
 
             self.running_inference_console_write()
             mix = prepare_mix(self.audio_file)
@@ -582,44 +622,47 @@ class SeperateMDX(SeperateAttributes):
         step = self.chunk_size - self.n_fft if overlap == DEFAULT else int((1 - overlap) * chunk_size)
         result = np.zeros((1, 2, mixture.shape[-1]), dtype=np.float32)
         divider = np.zeros((1, 2, mixture.shape[-1]), dtype=np.float32)
-        total = 0
         total_chunks = (mixture.shape[-1] + step - 1) // step
+        batch = []
 
-        for i in range(0, mixture.shape[-1], step):
-            total += 1
-            start = i
-            end = min(i + chunk_size, mixture.shape[-1])
+        def process_batch():
+            mix_waves = torch.tensor(np.stack([mix_part_ for _, _, mix_part_ in batch]), dtype=torch.float32).to(self.device)
+            batch_tar_waves = self.run_model(mix_waves, is_match_mix=is_match_mix)
 
-            chunk_size_actual = end - start
+            for (start, end, _), tar_waves in zip(batch, batch_tar_waves):
+                self.running_inference_progress_bar(total_chunks, is_match_mix=is_match_mix)
+                tar_waves = tar_waves[None]
+                chunk_size_actual = end - start
 
-            if overlap == 0:
-                window = None
-            else:
-                window = np.hanning(chunk_size_actual)
-                window = np.tile(window[None, None, :], (1, 2, 1))
+                if overlap == 0:
+                    divider[..., start:end] += 1
+                else:
+                    window = np.hanning(chunk_size_actual)
+                    window = np.tile(window[None, None, :], (1, 2, 1))
+                    tar_waves[..., :chunk_size_actual] *= window
+                    divider[..., start:end] += window
 
-            mix_part_ = mixture[:, start:end]
-            if end != i + chunk_size:
-                pad_size = (i + chunk_size) - end
-                mix_part_ = np.concatenate((mix_part_, np.zeros((2, pad_size), dtype='float32')), axis=-1)
+                result[..., start:end] += tar_waves[..., :end-start]
 
-            mix_part = torch.tensor([mix_part_], dtype=torch.float32).to(self.device)
-            mix_waves = mix_part.split(self.mdx_batch_size)
-            
-            with torch.no_grad():
-                for mix_wave in mix_waves:
-                    self.running_inference_progress_bar(total_chunks, is_match_mix=is_match_mix)
+            batch.clear()
 
-                    tar_waves = self.run_model(mix_wave, is_match_mix=is_match_mix)
-                    
-                    if window is not None:
-                        tar_waves[..., :chunk_size_actual] *= window 
-                        divider[..., start:end] += window
-                    else:
-                        divider[..., start:end] += 1
+        with torch.no_grad():
+            for i in range(0, mixture.shape[-1], step):
+                start = i
+                end = min(i + chunk_size, mixture.shape[-1])
 
-                    result[..., start:end] += tar_waves[..., :end-start]
-            
+                mix_part_ = mixture[:, start:end]
+                if end != i + chunk_size:
+                    pad_size = (i + chunk_size) - end
+                    mix_part_ = np.concatenate((mix_part_, np.zeros((2, pad_size), dtype='float32')), axis=-1)
+
+                batch.append((start, end, mix_part_))
+                if len(batch) >= self.mdx_batch_size:
+                    process_batch()
+
+            if batch:
+                process_batch()
+
         tar_waves = result / divider
         tar_waves_.append(tar_waves)
 
@@ -637,9 +680,9 @@ class SeperateMDX(SeperateAttributes):
             if NO_STEM in self.primary_stem_native or self.primary_stem_native == INST_STEM:
                 if org_mix.shape[1] != source.shape[1]:
                     source = spec_utils.match_array_shapes(source, org_mix)
-                source = org_mix - vr_denoiser(org_mix-source, self.device, model_path=self.DENOISER_MODEL)
+                source = org_mix - vr_denoiser(org_mix-source, self.device, model_path=self.DENOISER_MODEL, inference=self.run_inference)
             else:
-                source = vr_denoiser(source, self.device, model_path=self.DENOISER_MODEL)
+                source = vr_denoiser(source, self.device, model_path=self.DENOISER_MODEL, inference=self.run_inference)
 
         return source
 
@@ -651,9 +694,10 @@ class SeperateMDX(SeperateAttributes):
         if is_match_mix:
             spec_pred = spek.cpu().numpy()
         else:
-            spec_pred = -self.model_run(-spek)*0.5+self.model_run(spek)*0.5 if self.is_denoise else self.model_run(spek)
+            model_run = (lambda spek:self.run_inference(self.model_run, spek)) if self.is_torch_mdx else self.model_run
+            spec_pred = -model_run(-spek)*0.5+model_run(spek)*0.5 if self.is_denoise else model_run(spek)
 
-        return self.stft.inverse(torch.tensor(spec_pred).to(self.device)).cpu().detach().numpy()
+        return self.stft.inverse(torch.as_tensor(spec_pred).to(self.device)).cpu().detach().numpy()
 
 class SeperateMDXC(SeperateAttributes):        
 
@@ -770,25 +814,29 @@ class SeperateMDXC(SeperateAttributes):
 
         device = self.device
 
-        # Determine the model type based on the configuration and instantiate it
-        if self.is_roformer:
-            if 'num_bands' in self.roformer_config.model:
-                model = MelBandRoformer(**self.roformer_config.model)
-            elif 'freqs_per_bands' in self.roformer_config.model:
-                model = BSRoformer(**self.roformer_config.model)
-            # elif 'bandsplit_ratios' in self.roformer_config.model:
-            #     #print("**self.roformer_config.model", f"{self.roformer_config.model}")
-            #     model = SCNet(**self.roformer_config.model)
+        def load_model():
+            # Determine the model type based on the configuration and instantiate it
+            if self.is_roformer:
+                if 'num_bands' in self.roformer_config.model:
+                    model = MelBandRoformer(**self.roformer_config.model)
+                elif 'freqs_per_bands' in self.roformer_config.model:
+                    model = BSRoformer(**self.roformer_config.model)
+                # elif 'bandsplit_ratios' in self.roformer_config.model:
+                #     #print("**self.roformer_config.model", f"{self.roformer_config.model}")
+                #     model = SCNet(**self.roformer_config.model)
+                else:
+                    raise ValueError('Unknown model type in the configuration.')
             else:
-                raise ValueError('Unknown model type in the configuration.')
-        else:
-            model = TFC_TDF_net(self.mdx_c_configs, device=self.device)
+                model = TFC_TDF_net(self.mdx_c_configs, device=self.device)
 
-        # Load model checkpoint
-        checkpoint = torch.load(self.model_path, map_location='cpu')
-        model = model if not isinstance(model, torch.nn.DataParallel) else model.module
-        model.load_state_dict(checkpoint)
-        model.to(device).eval()
+            # Load model checkpoint
+            checkpoint = torch.load(self.model_path, map_location='cpu')
+            model = model if not isinstance(model, torch.nn.DataParallel) else model.module
+            model.load_state_dict(checkpoint)
+            return model.eval()
+
+        model_key = ('mdx_c', *model_cache.file_key(self.model_path), str(device), str(self.mdx_c_configs))
+        model = model_cache.get(model_key, load_model, device)
         mix = torch.tensor(mix, dtype=torch.float32)
 
         segment_size = self.mdx_c_configs.inference.dim_t if self.is_mdx_c_seg_def else self.mdx_segment_size
@@ -797,7 +845,8 @@ class SeperateMDXC(SeperateAttributes):
         N = self.overlap_mdx23
         step = int(C // N)
         fade_size = C // 10
-        batch_size = self.roformer_config.inference.batch_size
+        # A batch size picked in the GUI overrides the model config's default
+        batch_size = self.mdx_batch_size if self.mdx_batch_size > 1 else self.roformer_config.inference.batch_size
         length_init = mix.shape[-1]
 
         # Padding the mix to account for border effects
@@ -842,7 +891,7 @@ class SeperateMDXC(SeperateAttributes):
                 # Process in batches
                 if len(batch_data) >= batch_size or (i >= mix.shape[1]):
                     arr = torch.stack(batch_data, dim=0)
-                    x = model(arr)
+                    x = self.run_inference(model, arr)
 
                     for j in range(len(batch_locations)):
                         self.running_inference_progress_bar(batch_len)
@@ -850,7 +899,8 @@ class SeperateMDXC(SeperateAttributes):
                         window = window_middle
                         if start == 0:
                             window = window_start
-                        elif i >= mix.shape[1]:
+                        elif start + step >= mix.shape[1]:
+                            # Only the final chunk skips the fade-out (previously every chunk in the final batch did)
                             window = window_finish
 
                         result = self.overlap_add(result, x, l, j, start, window)
@@ -876,7 +926,7 @@ class SeperateMDXC(SeperateAttributes):
                 
             if self.is_denoise_model and not self.is_roformer:
                 if VOCAL_STEM in sources.keys() and INST_STEM in sources.keys():
-                    sources[VOCAL_STEM] = vr_denoiser(sources[VOCAL_STEM], self.device, model_path=self.DENOISER_MODEL)
+                    sources[VOCAL_STEM] = vr_denoiser(sources[VOCAL_STEM], self.device, model_path=self.DENOISER_MODEL, inference=self.run_inference)
                     if sources[VOCAL_STEM].shape[1] != org_mix.shape[1]:
                         sources[VOCAL_STEM] = spec_utils.match_array_shapes(sources[VOCAL_STEM], org_mix)
                     sources[INST_STEM] = org_mix - sources[VOCAL_STEM]
@@ -914,25 +964,25 @@ class SeperateDemucs(SeperateAttributes):
         mix = prepare_mix(self.audio_file)
 
         if is_no_cache:
-            if self.demucs_version == DEMUCS_V1:
-                if str(self.model_path).endswith(".gz"):
-                    self.model_path = gzip.open(self.model_path, "rb")
-                klass, args, kwargs, state = torch.load(self.model_path)
-                self.demucs = klass(*args, **kwargs)
-                self.demucs.to(self.device) 
-                self.demucs.load_state_dict(state)
-            elif self.demucs_version == DEMUCS_V2:
-                self.demucs = auto_load_demucs_model_v2(self.demucs_source_list, self.model_path)
-                self.demucs.to(self.device) 
-                self.demucs.load_state_dict(torch.load(self.model_path))
-                self.demucs.eval()
-            else:  
-                self.demucs = HDemucs(sources=self.demucs_source_list)
-                self.demucs = _gm(name=os.path.splitext(os.path.basename(self.model_path))[0], 
-                                  repo=Path(os.path.dirname(self.model_path)))
-                self.demucs = demucs_segments(self.segment, self.demucs)
-                self.demucs.to(self.device)
-                self.demucs.eval()
+            def load_model():
+                if self.demucs_version == DEMUCS_V1:
+                    model_file = gzip.open(self.model_path, "rb") if str(self.model_path).endswith(".gz") else self.model_path
+                    klass, args, kwargs, state = torch.load(model_file)
+                    demucs = klass(*args, **kwargs)
+                    demucs.load_state_dict(state)
+                    return demucs
+                elif self.demucs_version == DEMUCS_V2:
+                    demucs = auto_load_demucs_model_v2(self.demucs_source_list, self.model_path)
+                    demucs.load_state_dict(torch.load(self.model_path))
+                    return demucs.eval()
+                else:
+                    demucs = _gm(name=os.path.splitext(os.path.basename(self.model_path))[0],
+                                 repo=Path(os.path.dirname(self.model_path)))
+                    demucs = demucs_segments(self.segment, demucs)
+                    return demucs.eval()
+
+            model_key = ('demucs', *model_cache.file_key(self.model_path), self.demucs_version, str(self.segment), tuple(self.demucs_source_list))
+            self.demucs = model_cache.get(model_key, load_model, self.device)
 
             if self.pre_proc_model:
                 if self.primary_stem not in [VOCAL_STEM, INST_STEM]:
@@ -1079,6 +1129,8 @@ class SeperateDemucs(SeperateAttributes):
         ref = mix.mean(0)        
         mix = (mix - ref.mean()) / ref.std()
         mix_infer = mix 
+        # A pre-process model run since loading may have moved this model off the GPU
+        self.demucs.to(self.device)
         
         with torch.no_grad():
             if self.demucs_version == DEMUCS_V1:
@@ -1102,7 +1154,8 @@ class SeperateDemucs(SeperateAttributes):
                                         self.overlap,
                                         static_shifts=1 if self.shifts == 0 else self.shifts,
                                         set_progress_bar=self.set_progress_bar,
-                                        device=self.device)[0]
+                                        device=self.device,
+                                        inference=self.run_inference)[0]
         
         sources = (sources * ref.std() + ref.mean()).cpu().numpy()
         sources[[0,1]] = sources[[1,0]]
@@ -1135,17 +1188,23 @@ class SeperateVR(SeperateAttributes):
             model_size = math.ceil(os.stat(self.model_path).st_size / 1024)
             nn_arch_size = min(nn_arch_sizes, key=lambda x:abs(x-model_size))
 
-            if nn_arch_size in vr_5_1_models or self.is_vr_51_model:
-                self.model_run = nets_new.CascadedNet(self.mp.param['bins'] * 2, 
-                                                      nn_arch_size, 
-                                                      nout=self.model_capacity[0], 
-                                                      nout_lstm=self.model_capacity[1])
+            if nn_arch_size in vr_5_1_models:
                 self.is_vr_51_model = True
-            else:
-                self.model_run = nets.determine_model_capacity(self.mp.param['bins'] * 2, nn_arch_size)
-                            
-            self.model_run.load_state_dict(torch.load(self.model_path, map_location=cpu)) 
-            self.model_run.to(device) 
+
+            def load_model():
+                if self.is_vr_51_model:
+                    model = nets_new.CascadedNet(self.mp.param['bins'] * 2,
+                                                 nn_arch_size,
+                                                 nout=self.model_capacity[0],
+                                                 nout_lstm=self.model_capacity[1])
+                else:
+                    model = nets.determine_model_capacity(self.mp.param['bins'] * 2, nn_arch_size)
+
+                model.load_state_dict(torch.load(self.model_path, map_location=cpu))
+                return model
+
+            model_key = ('vr', *model_cache.file_key(self.model_path), self.is_vr_51_model, tuple(self.model_capacity), self.mp.param['bins'])
+            self.model_run = model_cache.get(model_key, load_model, device)
 
             self.running_inference_console_write()
                         
@@ -1201,7 +1260,7 @@ class SeperateVR(SeperateAttributes):
                 wav_resolution = bp['res_type']
         
             if d == bands_n: # high-end band
-                X_wave[d], _ = librosa.load(audio_file, bp['sr'], False, dtype=np.float32, res_type=wav_resolution)
+                X_wave[d], _ = load_audio_cached(audio_file, sr=bp['sr'], mono=False, dtype=np.float32, res_type=wav_resolution)
                 X_spec_s[d] = spec_utils.wave_to_spectrogram(X_wave[d], bp['hl'], bp['n_fft'], self.mp, band=d, is_v51_model=self.is_vr_51_model)
                     
                 if not np.any(X_wave[d]) and is_mp3:
@@ -1244,7 +1303,7 @@ class SeperateVR(SeperateAttributes):
                     self.set_progress_bar(0.1, 0.8/total_iterations*self.progress_value)
                     X_batch = X_dataset[i: i + self.batch_size]
                     X_batch = torch.from_numpy(X_batch).to(device)
-                    pred = self.model_run.predict_mask(X_batch)
+                    pred = self.run_inference(self.model_run.predict_mask, X_batch)
                     if not pred.size()[3] > 0:
                         raise Exception(ERROR_MAPPER[WINDOW_SIZE_ERROR])
                     pred = pred.detach().cpu().numpy()
@@ -1384,7 +1443,7 @@ def prepare_mix(mix):
     audio_path = mix
 
     if not isinstance(mix, np.ndarray):
-        mix, sr = librosa.load(mix, mono=False, sr=44100)
+        mix, sr = load_audio_cached(mix, mono=False, sr=44100)
     else:
         mix = mix.T
 
@@ -1396,6 +1455,25 @@ def prepare_mix(mix):
         mix = np.asfortranarray([mix,mix])
 
     return mix
+
+_decoded_audio = {}
+
+def load_audio_cached(audio_path, **load_args):
+    """librosa.load that reuses recent decodes of an unchanged file, so re-running a song
+    with another model, the vocal splitter or an ensemble doesn't decode and resample it again."""
+    try:
+        stat = os.stat(audio_path)
+    except (TypeError, OSError):
+        return librosa.load(audio_path, **load_args)
+
+    key = (os.path.abspath(audio_path), stat.st_mtime_ns, stat.st_size, tuple(sorted(load_args.items())))
+    if key not in _decoded_audio:
+        if len(_decoded_audio) >= 2:
+            del _decoded_audio[next(iter(_decoded_audio))]
+        _decoded_audio[key] = librosa.load(audio_path, **load_args)
+
+    audio, sr = _decoded_audio[key]
+    return audio.copy(), sr
 
 def rerun_mp3(audio_file, sample_rate=44100):
 
@@ -1443,7 +1521,7 @@ def list_to_dictionary(lst):
     dictionary = {item: index for index, item in enumerate(lst)}
     return dictionary
 
-def vr_denoiser(X, device, hop_length=1024, n_fft=2048, cropsize=256, is_deverber=False, model_path=None):
+def vr_denoiser(X, device, hop_length=1024, n_fft=2048, cropsize=256, is_deverber=False, model_path=None, inference=None):
     batchsize = 4
 
     if is_deverber:
@@ -1454,10 +1532,13 @@ def vr_denoiser(X, device, hop_length=1024, n_fft=2048, cropsize=256, is_deverbe
         mp = None
         hop_length=1024
         nout, nout_lstm = 16, 128
-    
-    model = nets_new.CascadedNet(n_fft, nout=nout, nout_lstm=nout_lstm)
-    model.load_state_dict(torch.load(model_path, map_location=cpu))
-    model.to(device)
+
+    def load_model():
+        model = nets_new.CascadedNet(n_fft, nout=nout, nout_lstm=nout_lstm)
+        model.load_state_dict(torch.load(model_path, map_location=cpu))
+        return model
+
+    model = model_cache.get(('vr_denoiser', *model_cache.file_key(model_path), n_fft, nout, nout_lstm), load_model, device)
 
     if mp is None:
         X_spec = spec_utils.wave_to_spectrogram_old(X, hop_length, n_fft)
@@ -1492,7 +1573,7 @@ def vr_denoiser(X, device, hop_length=1024, n_fft=2048, cropsize=256, is_deverbe
             X_batch = X_dataset[i: i + batchsize]
             X_batch = torch.from_numpy(X_batch).to(device)
 
-            pred = model.predict_mask(X_batch)
+            pred = inference(model.predict_mask, X_batch) if inference else model.predict_mask(X_batch)
 
             pred = pred.detach().cpu().numpy()
             pred = np.concatenate(pred, axis=2)
