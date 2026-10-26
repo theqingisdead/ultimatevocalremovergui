@@ -6,6 +6,10 @@ on:
     paths-ignore: ['**.md']
   workflow_dispatch:
 
+concurrency:
+  group: build-windows-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     runs-on: windows-latest
@@ -24,8 +28,9 @@ jobs:
 
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade "pip<25"
-          python -m pip install -r packaging/requirements-windows.txt
+          . packaging\ci.ps1
+          Invoke-Logged 'pip upgrade' { python -m pip install --upgrade "pip<25" }
+          Invoke-Logged 'pip install' { python -m pip install -r packaging/requirements-windows.txt }
 
       - name: Download FFmpeg and Rubber Band
         run: |
@@ -51,26 +56,29 @@ jobs:
 
       - name: Smoke test from source
         run: |
-          python UVR.py --headless --input smoke\clip.wav --out smoke\source\mdx --arch mdx --model smoke\UVR-MDX-NET-Inst_HQ_3.onnx --set is_denoise_model=True denoiser_model=models/VR_Models/UVR-DeNoise-Lite.pth
-          if ($LASTEXITCODE -ne 0) { exit 1 }
-          python UVR.py --headless --input smoke\clip.wav --out smoke\source\demucs --arch demucs --model smoke\demucs\htdemucs.yaml
-          if ($LASTEXITCODE -ne 0) { exit 1 }
+          . packaging\ci.ps1
+          Invoke-Logged 'source mdx' { python UVR.py --headless --input smoke\clip.wav --out smoke\source\mdx --arch mdx --model smoke\UVR-MDX-NET-Inst_HQ_3.onnx --set is_denoise_model=True denoiser_model=models/VR_Models/UVR-DeNoise-Lite.pth }
+          Invoke-Logged 'source demucs' { python UVR.py --headless --input smoke\clip.wav --out smoke\source\demucs --arch demucs --model smoke\demucs\htdemucs.yaml }
 
       - name: Build with PyInstaller
-        run: pyinstaller packaging/UVR.spec --noconfirm --distpath dist --workpath packaging/work
+        run: |
+          . packaging\ci.ps1
+          Invoke-Logged 'pyinstaller' { pyinstaller packaging/UVR.spec --noconfirm --distpath dist --workpath packaging/work }
+          Write-Host "Built $((Get-ChildItem dist\UVR -Recurse -File).Count) files"
 
       - name: Smoke test UVR.exe (separation without the GUI)
         run: |
+          . packaging\ci.ps1
           function Test-Exe([string]$name, [string[]]$extra) {
             $exeArgs = @('--headless', '--input', 'smoke\clip.wav', '--out', "smoke\exe\$name") + $extra
             $p = Start-Process dist\UVR\UVR.exe -ArgumentList $exeArgs -WorkingDirectory $pwd -Wait -PassThru
             Write-Host "${name}: UVR.exe exit code $($p.ExitCode)"
             if ($p.ExitCode -ne 0) {
-              if (Test-Path headless_error.log) { Get-Content headless_error.log }
+              $lines = if (Test-Path headless_error.log) { Get-Content headless_error.log -Tail 40 } else { @('no headless_error.log') }
+              Write-Annotation "UVR.exe $name exit $($p.ExitCode)" $lines
               exit 1
             }
-            python tools/compare_outputs.py "smoke\source\$name" "smoke\exe\$name" --min-db 100
-            if ($LASTEXITCODE -ne 0) { exit 1 }
+            Invoke-Logged "compare $name" { python tools/compare_outputs.py "smoke\source\$name" "smoke\exe\$name" --min-db 100 }
           }
           Test-Exe 'mdx' @('--arch', 'mdx', '--model', 'smoke\UVR-MDX-NET-Inst_HQ_3.onnx', '--set', 'is_denoise_model=True', 'denoiser_model=models/VR_Models/UVR-DeNoise-Lite.pth')
           Test-Exe 'demucs' @('--arch', 'demucs', '--model', 'smoke\demucs\htdemucs.yaml')
@@ -92,7 +100,12 @@ jobs:
             if ($p.HasExited) { break }
             if ($p.MainWindowTitle -like '*Ultimate Vocal Remover*') { $ok = $true; break }
           }
-          Write-Host "exited: $($p.HasExited)  window title: '$($p.MainWindowTitle)'"
-          Get-Process | Where-Object { $_.MainWindowTitle } | Format-Table Id, ProcessName, MainWindowTitle
+          $status = "exited: $($p.HasExited)  window title: '$($p.MainWindowTitle)'"
+          $windows = Get-Process | Where-Object { $_.MainWindowTitle } | ForEach-Object { "$($_.ProcessName): $($_.MainWindowTitle)" }
+          Write-Host $status
           if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force }
-          if (-not $ok) { exit 1 }
+          if (-not $ok) {
+            . packaging\ci.ps1
+            Write-Annotation 'GUI check' (@($status) + $windows)
+            exit 1
+          }
