@@ -104,5 +104,11 @@ jobs:
           if ($LASTEXITCODE -ne 0) { Write-Annotation 'download zip' @("curl exit $LASTEXITCODE"); exit 1 }
           Write-Notice "Downloaded the artifact zip: $([math]::Round((Get-Item $zip).Length / 1GB, 2)) GB"
           Remove-Item -Recurse -Force dist
-          Test-Extracted $zip (Join-Path $env:RUNNER_TEMP 'plain\UVR') 'zip-plain'
-          Test-Extracted $zip (Join-Path $env:RUNNER_TEMP '다운로드 폴더\UVR optimize') 'zip-korean'
+          $plain = Join-Path $env:RUNNER_TEMP 'plain\UVR'
+          Expand-Zip $zip $plain 'zip'
+          # tar can't extract into a non-ASCII path, so copy the extracted app there (before any run writes settings)
+          $korean = Join-Path $env:RUNNER_TEMP '다운로드 폴더\UVR optimize'
+          New-Item -ItemType Directory -Force (Split-Path $korean) | Out-Null
+          Copy-Item $plain $korean -Recurse
+          Test-App $korean 'zip-korean'
+          Test-App $plain 'zip-plain'

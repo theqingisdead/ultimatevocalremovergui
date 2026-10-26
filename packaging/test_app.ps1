@@ -75,8 +75,8 @@ function Get-FileList([string]$dir) {
     Get-ChildItem $dir -Recurse -File -Force | ForEach-Object { $_.FullName.Substring($root.Length) } | Sort-Object
 }
 
-# Extracts the downloaded zip with Windows' built-in tar into $dest and tests it there
-function Test-Extracted([string]$zip, [string]$dest, [string]$label) {
+# Extracts the downloaded zip with Windows' built-in tar into $dest and checks no built file is missing
+function Expand-Zip([string]$zip, [string]$dest, [string]$label) {
     New-Item -ItemType Directory -Force $dest | Out-Null
     $start = Get-Date
     tar.exe -xf $zip -C $dest
@@ -90,7 +90,11 @@ function Test-Extracted([string]$zip, [string]$dest, [string]$label) {
         Write-Annotation "$label is missing $(@($missing).Count) of $($built.Count) built files" (@($missing) | Select-Object -First 30)
         exit 1
     }
-    $exe = Join-Path $dest 'UVR.exe'
+}
+
+# Runs the separation and GUI checks on the app in $dir
+function Test-App([string]$dir, [string]$label) {
+    $exe = Join-Path $dir 'UVR.exe'
     Test-Separation $exe $label
     Test-Gui $exe $label
 }
