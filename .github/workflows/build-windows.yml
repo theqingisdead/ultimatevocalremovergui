@@ -88,9 +88,10 @@ jobs:
           path: dist/UVR
           retention-days: 30
 
-      # Test exactly what users download: the uploaded zip, extracted with Windows' own unzip
-      # into a folder whose path has spaces and non-ASCII (Korean) characters
-      - name: Test the downloaded zip from a fresh folder
+      # Test exactly what users download: the uploaded zip, extracted with Windows' built-in tar,
+      # first into a plain folder, then into one whose path has spaces and Korean characters
+      - name: Test the downloaded zip from fresh folders
+        timeout-minutes: 60
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -98,9 +99,7 @@ jobs:
           $zip = Join-Path $env:RUNNER_TEMP 'UVR-optimize-windows-x64.zip'
           curl.exe -sSL -H "Authorization: Bearer $env:GH_TOKEN" -o $zip "https://api.github.com/repos/${{ github.repository }}/actions/artifacts/${{ steps.upload.outputs.artifact-id }}/zip"
           if ($LASTEXITCODE -ne 0) { Write-Annotation 'download zip' @("curl exit $LASTEXITCODE"); exit 1 }
-          Write-Host "Downloaded $([math]::Round((Get-Item $zip).Length / 1GB, 2)) GB"
-          $dest = Join-Path $env:RUNNER_TEMP '다운로드 폴더\UVR optimize'
-          Expand-Archive $zip -DestinationPath $dest
+          Write-Notice "Downloaded the artifact zip: $([math]::Round((Get-Item $zip).Length / 1GB, 2)) GB"
           Remove-Item -Recurse -Force dist
-          Test-Separation (Join-Path $dest 'UVR.exe') 'zip'
-          Test-Gui (Join-Path $dest 'UVR.exe')
+          Test-Extracted $zip (Join-Path $env:RUNNER_TEMP 'plain\UVR') 'zip-plain'
+          Test-Extracted $zip (Join-Path $env:RUNNER_TEMP '다운로드 폴더\UVR optimize') 'zip-korean'
