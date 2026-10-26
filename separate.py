@@ -37,6 +37,8 @@ import time
 from onnx import load
 from onnx2pytorch import ConvertModel
 import gc
+# After the imports above: lets checkpoints saved with NumPy 2 load (see lib_v5/numpy_compat.py)
+from lib_v5 import numpy_compat # noqa: F401
 
 if TYPE_CHECKING:
     from UVR import ModelData
