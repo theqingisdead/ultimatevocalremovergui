@@ -120,6 +120,49 @@ def tensor_chunk(tensor_or_chunk):
         assert isinstance(tensor_or_chunk, th.Tensor)
         return TensorChunk(tensor_or_chunk)
 
+class BatchedChunks:
+    """Runs consecutive chunks through the model `batch_size` at a time.
+
+    future(i).result() returns chunk i's output, exactly as apply_model would
+    for that chunk alone, computing its whole batch on first use.
+    """
+    class Result:
+        def __init__(self, owner, index):
+            self.owner = owner
+            self.index = index
+
+        def result(self):
+            return self.owner.output(self.index)
+
+    def __init__(self, model, chunks, batch_size, device, inference=None):
+        self.model = model
+        self.chunks = chunks
+        self.batch_size = batch_size
+        self.device = device
+        self.inference = inference
+        self.valid_lengths = [model.valid_length(chunk.length) if hasattr(model, 'valid_length') else chunk.length
+                              for chunk in chunks]
+        self.outputs = {}
+
+    def future(self, index):
+        return BatchedChunks.Result(self, index)
+
+    def output(self, index):
+        if index not in self.outputs:
+            start = index - index % self.batch_size
+            batch = range(start, min(start + self.batch_size, len(self.chunks)))
+            self.outputs = {}
+            # Chunks only share a forward pass if they pad to the same length (the last one may not)
+            for valid_length in dict.fromkeys(self.valid_lengths[i] for i in batch):
+                members = [i for i in batch if self.valid_lengths[i] == valid_length]
+                padded_mix = th.cat([self.chunks[i].padded(valid_length) for i in members]).to(self.device)
+                with th.no_grad():
+                    out = self.inference(self.model, padded_mix) if self.inference else self.model(padded_mix)
+                per_chunk = out.shape[0] // len(members)
+                for n, i in enumerate(members):
+                    self.outputs[i] = center_trim(out[n * per_chunk:(n + 1) * per_chunk], self.chunks[i].length)
+        return self.outputs[index]
+
 def apply_model(model, 
                 mix, 
                 shifts=1, 
@@ -132,7 +175,8 @@ def apply_model(model,
                 progress=False, 
                 num_workers=0, 
                 pool=None,
-                inference=None): 
+                inference=None,
+                batch_size=1):
     """
     Apply model to a given mixture.
 
@@ -149,6 +193,9 @@ def apply_model(model,
             execute the computation, otherwise `mix.device` is assumed.
             When `device` is different from `mix.device`, only local computations will
             be on `device`, while the entire tracks will be stored on `mix.device`.
+        inference (callable or None): if provided, called as inference(model, input)
+            instead of model(input), e.g. to run in half precision.
+        batch_size (int): number of split segments run through the model at once.
     """
     
     global fut_length
@@ -176,6 +223,7 @@ def apply_model(model,
         'set_progress_bar': set_progress_bar,
         'static_shifts': static_shifts,
         'inference': inference,
+        'batch_size': batch_size,
     }
     
     if isinstance(model, BagOfModels):
@@ -242,11 +290,15 @@ def apply_model(model,
         # transition_power is 1.
         weight = (weight / weight.max())**transition_power
         futures = []
-        for offset in offsets:
-            chunk = TensorChunk(mix, offset, segment)
-            future = pool.submit(apply_model, model, chunk, **kwargs)
-            futures.append((future, offset))
-            offset += segment
+        if batch_size > 1 and isinstance(pool, DummyPoolExecutor):
+            batched = BatchedChunks(model, [TensorChunk(mix, offset, segment) for offset in offsets], batch_size, device, inference)
+            futures = [(batched.future(i), offset) for i, offset in enumerate(offsets)]
+        else:
+            for offset in offsets:
+                chunk = TensorChunk(mix, offset, segment)
+                future = pool.submit(apply_model, model, chunk, **kwargs)
+                futures.append((future, offset))
+                offset += segment
         if progress:
             futures = tqdm.tqdm(futures, unit_scale=scale, ncols=120, unit='seconds')
         for future, offset in futures:

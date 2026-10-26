@@ -52,6 +52,14 @@ the input again. The last two decodes of an unchanged file are kept.
   Chunks are now batched. Output is bit-identical.
 - Roformer / MDX23C: the GUI batch size was ignored in favor of the model
   config's value (usually 1). A GUI value above 1 now takes effect.
+- Demucs v3/v4: new Batch Size option in Advanced Demucs Options. Several
+  segments run through the model in one pass instead of one at a time. GPU
+  only; on the CPU batching was slower, so it's ignored there. With Shifts set
+  to 0, batched output matches batch size 1 within float rounding (126-133 dB).
+  With Shifts above 0 the output differs by design: the Demucs transformer
+  draws from Python's random generator on every forward pass, so batching
+  changes which random shift offsets get picked. That's the same kind of
+  run-to-run variation upstream already has, since it never seeds the shifts.
 
 ## Better output
 

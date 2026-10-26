@@ -68,7 +68,7 @@ def main():
             ('fork', FORK_DIR, args.set),
             ('fork half', FORK_DIR, args.set + ['is_half_precision=True'])]
     if args.batch:
-        batch_key = 'batch_size' if args.arch == 'vr' else 'mdx_batch_size'
+        batch_key = {'vr': 'batch_size', 'demucs': 'demucs_batch_size'}.get(args.arch, 'mdx_batch_size')
         runs.append((f'fork half batch {args.batch}', FORK_DIR, args.set + ['is_half_precision=True', f'{batch_key}={args.batch}']))
 
     results = [(name, *run(name, uvr_dir, args, out_root, settings)) for name, uvr_dir, settings in runs]
@@ -89,6 +89,9 @@ def main():
         print(f'{name:<22}{first:>10}{second:>10}{vram:>11}   {diff}')
     print('\nPeak VRAM counts PyTorch memory only (not ONNX Runtime). "identical" means bit-exact;')
     print('above ~100 dB is rounding noise; half precision measured 60-80 dB in testing.')
+    if args.arch == 'demucs' and args.batch:
+        print('Demucs with Shifts above 0 uses random offsets, and batching changes which ones are drawn,')
+        print('so the batch row differs from upstream by design. Add --set shifts=0 to check batching exactly.')
 
 
 if __name__ == '__main__':

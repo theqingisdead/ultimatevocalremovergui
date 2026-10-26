@@ -281,6 +281,7 @@ class SeperateAttributes:
                     self.secondary_stem = secondary_stem(self.primary_stem)
 
             self.shifts = model_data.shifts
+            self.demucs_batch_size = model_data.demucs_batch_size
             self.is_split_mode = model_data.is_split_mode if not self.demucs_version == DEMUCS_V4 else True
             self.primary_model_name, self.primary_sources = self.cached_source_callback(DEMUCS_ARCH_TYPE, model_name=self.model_basename)
 
@@ -1155,7 +1156,9 @@ class SeperateDemucs(SeperateAttributes):
                                         static_shifts=1 if self.shifts == 0 else self.shifts,
                                         set_progress_bar=self.set_progress_bar,
                                         device=self.device,
-                                        inference=self.run_inference)[0]
+                                        inference=self.run_inference,
+                                        # Batching only pays off on a GPU; on the CPU it's slower
+                                        batch_size=self.demucs_batch_size if torch.device(self.device).type != 'cpu' else 1)[0]
         
         sources = (sources * ref.std() + ref.mean()).cpu().numpy()
         sources[[0,1]] = sources[[1,0]]

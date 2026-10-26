@@ -89,7 +89,7 @@ def make_model_data(constants, arch, model_path, settings, config_path, model_da
         'is_post_process': False, 'is_high_end_process': False, 'post_process_threshold': 0.2,
         'mdx_segment_size': 256, 'mdx_batch_size': 1, 'overlap_mdx': c.DEFAULT, 'overlap_mdx23': 8,
         'is_mdx_c_seg_def': True, 'margin': 44100, 'compensate': c.AUTO_SELECT,
-        'segment': c.DEF_OPT, 'overlap': 0.25, 'shifts': 2, 'is_split_mode': True, 'is_chunk_demucs': False,
+        'segment': c.DEF_OPT, 'overlap': 0.25, 'shifts': 2, 'demucs_batch_size': 1, 'is_split_mode': True, 'is_chunk_demucs': False,
         'demucs_stems': c.ALL_STEMS, 'mdx_stems': c.ALL_STEMS, 'is_demucs_combine_stems': True,
         'is_mdx23_combine_stems': True, 'is_match_frequency_pitch': True, 'semitone_shift': 0,
         'is_invert_spec': False, 'is_normalization': False, 'wav_type_set': 'FLOAT',
@@ -220,6 +220,7 @@ def make_model_data(constants, arch, model_path, settings, config_path, model_da
     elif arch == 'demucs':
         md.process_method = c.DEMUCS_ARCH_TYPE
         md.shifts = int(s['shifts'])
+        md.demucs_batch_size = int(s['demucs_batch_size'])
         md.is_split_mode = s['is_split_mode']
         md.segment = s['segment']
         md.is_chunk_demucs = s['is_chunk_demucs']

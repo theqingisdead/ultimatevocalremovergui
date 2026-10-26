@@ -597,6 +597,7 @@ DEFAULT_DATA = {
         'overlap_mdx': MDX_OVERLAP[0],
         'overlap_mdx23': '8',
         'shifts': 2,
+        'demucs_batch_size': DEF_OPT,
         'chunks_demucs': CHUNKS[0],
         'margin_demucs': 44100,
         'is_chunk_demucs': False,
@@ -727,6 +728,7 @@ SETTING_CHECK = ('vr_model',
                'overlap',
                'overlap_mdx',
                'shifts',
+               'demucs_batch_size',
                'chunks_demucs',
                'margin_demucs',
                'is_chunk_demucs',
@@ -1255,6 +1257,9 @@ POST_PROCESS_THREASHOLD_HELP = ('Allows the user to control the intensity of the
                                '• Higher values potentially remove more artifacts. However, bleed might increase.\n'
                                '• Lower values limit artifact removal.')
 
+DEMUCS_BATCH_SIZE_HELP = ('Number of audio segments processed in one pass on the GPU.\n\nNotes:\n\n'
+                          '• Higher values are faster on GPUs with spare VRAM but use more VRAM.\n'
+                          '• Batch size has no effect on output quality.')
 BATCH_SIZE_HELP = ('Specify the number of batches to be processed at a time.\n\nNotes:\n\n'
                                '• Higher values mean more RAM usage but slightly faster processing times.\n'
                                '• Lower values mean less RAM usage but slightly longer processing times.\n'

@@ -606,6 +606,7 @@ class ModelData():
             self.margin_demucs = int(root.margin_demucs_var.get())
             self.chunks_demucs = 0
             self.shifts = int(root.shifts_var.get())
+            self.demucs_batch_size = 1 if root.demucs_batch_size_var.get() == DEF_OPT else int(root.demucs_batch_size_var.get())
             self.is_split_mode = root.is_split_mode_var.get()
             self.segment = root.segment_var.get()
             self.is_chunk_demucs = root.is_chunk_demucs_var.get()
@@ -3949,6 +3950,12 @@ class MainWindow(TkinterDnD.Tk if is_dnd_compatible else tk.Tk):
         self.overlap_Option = ComboBoxEditableMenu(demucs_frame, values=DEMUCS_OVERLAP, width=MENU_COMBOBOX_WIDTH, textvariable=self.overlap_var, pattern=REG_OVERLAP, default=DEMUCS_OVERLAP)#
         self.overlap_Option.grid(pady=MENU_PADDING_1)
         self.help_hints(self.overlap_Label, text=OVERLAP_HELP)
+
+        demucs_batch_size_Label = self.menu_sub_LABEL_SET(demucs_frame, BATCH_SIZE_TEXT)
+        demucs_batch_size_Label.grid(pady=MENU_PADDING_1)
+        demucs_batch_size_Option = ComboBoxEditableMenu(demucs_frame, values=BATCH_SIZE, width=MENU_COMBOBOX_WIDTH, textvariable=self.demucs_batch_size_var, pattern=REG_BATCHES, default=BATCH_SIZE)#
+        demucs_batch_size_Option.grid(pady=MENU_PADDING_1)
+        self.help_hints(demucs_batch_size_Label, text=DEMUCS_BATCH_SIZE_HELP)
 
         pitch_shift_Label = self.menu_sub_LABEL_SET(demucs_frame, SHIFT_CONVERSION_PITCH_TEXT)
         pitch_shift_Label.grid(pady=MENU_PADDING_1)
@@ -7387,6 +7394,7 @@ class MainWindow(TkinterDnD.Tk if is_dnd_compatible else tk.Tk):
         self.overlap_mdx_var = tk.StringVar(value=data['overlap_mdx'])
         self.overlap_mdx23_var = tk.StringVar(value=data['overlap_mdx23'])
         self.shifts_var = tk.StringVar(value=data['shifts'])
+        self.demucs_batch_size_var = tk.StringVar(value=data['demucs_batch_size'])
         self.chunks_demucs_var = tk.StringVar(value=data['chunks_demucs'])
         self.margin_demucs_var = tk.StringVar(value=data['margin_demucs'])
         self.is_chunk_demucs_var = tk.BooleanVar(value=data['is_chunk_demucs'])
@@ -7547,6 +7555,7 @@ class MainWindow(TkinterDnD.Tk if is_dnd_compatible else tk.Tk):
             self.segment_var.set(loaded_setting['segment'])
             self.overlap_var.set(loaded_setting['overlap'])
             self.shifts_var.set(loaded_setting['shifts'])
+            self.demucs_batch_size_var.set(loaded_setting['demucs_batch_size'])
             self.chunks_demucs_var.set(loaded_setting['chunks_demucs'])
             self.margin_demucs_var.set(loaded_setting['margin_demucs'])
             self.is_chunk_demucs_var.set(loaded_setting['is_chunk_demucs'])
@@ -7689,6 +7698,7 @@ class MainWindow(TkinterDnD.Tk if is_dnd_compatible else tk.Tk):
             'overlap_mdx': self.overlap_mdx_var.get(),
             'overlap_mdx23': self.overlap_mdx23_var.get(),
             'shifts': self.shifts_var.get(),
+            'demucs_batch_size': self.demucs_batch_size_var.get(),
             'chunks_demucs': self.chunks_demucs_var.get(),
             'margin_demucs': self.margin_demucs_var.get(),
             'is_chunk_demucs': self.is_chunk_demucs_var.get(),
